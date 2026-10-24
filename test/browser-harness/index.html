@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>加速器浏览器验证</title>
+<script src="/bilibili-accelerator.user.js"></script>
+<style>body{font:14px/1.6 Consolas,"Microsoft YaHei",monospace;margin:16px;background:#fff;color:#222}pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<h3>B站多节点加速器：浏览器端验证</h3>
+<pre id="out">运行中…</pre>
+<script>
+(async () => {
+  const SIZE = 8 * 1024 * 1024;
+  const byteAt = i => (i * 131 + 7) & 255;
+  const results = {};
+  const check = (buf, start) => {
+    const u = new Uint8Array(buf);
+    for (let i = 0; i < u.length; i++) if (u[i] !== byteAt(start + i)) return 'mismatch@' + i;
+    return 'ok';
+  };
+  const H = p => 'http://localhost:' + p;
+  // 模拟页面内嵌的 __playinfo__：一路视频在快、慢两个节点上；另一路只在 403 节点上
+  window.__playinfo__ = { data: { dash: {
+    video: [{ id: 80, bandwidth: 2000000, baseUrl: H(8767) + '/v/1234-1-80.m4s?s=1', backupUrl: [H(8766) + '/v/1234-1-80.m4s?s=2'] }],
+    audio: [{ id: 30280, bandwidth: 128000, baseUrl: H(8768) + '/v/1234-1-30280.m4s', backupUrl: [] }],
+  } } };
+  const api = window.__biliAccelInstalled;
+  results.installed = !!api;
+
+  function xhr(url, range, opts) {
+    opts = opts || {};
+    return new Promise(resolve => {
+      const x = new XMLHttpRequest();
+      const events = [];
+      const t0 = performance.now();
+      x.open('GET', url);
+      x.responseType = 'arraybuffer';
+      x.setRequestHeader('Range', range);
+      x.onreadystatechange = () => events.push('rs' + x.readyState);
+      x.onloadstart = () => events.push('loadstart');
+      let progress = 0;
+      x.onprogress = () => { progress++; };
+      x.onload = () => events.push('load');
+      x.onerror = () => events.push('error');
+      x.onabort = () => events.push('abort');
+      x.addEventListener('loadend', () => {
+        events.push('loadend');
+        resolve({ x, events, progress, ms: Math.round(performance.now() - t0) });
+      });
+      x.send();
+      if (opts.abortAfter === 0) x.abort();
+      else if (opts.abortAfter) setTimeout(() => x.abort(), opts.abortAfter);
+    });
+  }
+
+  // 1. XHR arraybuffer 被接管
+  {
+    const r = await xhr(H(8767) + '/v/1234-1-80.m4s?s=1', 'bytes=1000-3098151');
+    results.xhr = {
+      status: r.x.status, readyState: r.x.readyState, bytes: r.x.response && r.x.response.byteLength,
+      data: r.x.response ? check(r.x.response, 1000) : 'none',
+      contentRange: r.x.getResponseHeader('Content-Range'),
+      events: r.events.join(','), progressEvents: r.progress, ms: r.ms,
+    };
+  }
+  // 2. fetch 被接管
+  {
+    const t0 = performance.now();
+    const res = await fetch(H(8767) + '/v/1234-1-80.m4s?s=1', { headers: { Range: 'bytes=4000000-6097151' } });
+    const buf = await res.arrayBuffer();
+    results.fetch = { status: res.status, bytes: buf.byteLength, data: check(buf, 4000000), contentRange: res.headers.get('content-range'), ms: Math.round(performance.now() - t0) };
+  }
+  // 3. XHR 中途取消
+  {
+    const r = await xhr(H(8767) + '/v/1234-1-80.m4s?s=1', 'bytes=0-6291455', { abortAfter: 60 });
+    results.xhrAbort = { events: r.events.join(','), readyState: r.x.readyState, status: r.x.status };
+  }
+  // 3b. 还没拿到响应头就取消
+  {
+    const r = await xhr(H(8767) + '/v/1234-1-80.m4s?s=1', 'bytes=0-6291455', { abortAfter: 0 });
+    results.xhrAbortEarly = { events: r.events.join(','), readyState: r.x.readyState, status: r.x.status };
+  }
+  // 4. 节点全部 403 时回退给真实 XHR，播放器拿到原始响应
+  {
+    const r = await xhr(H(8768) + '/v/1234-1-30280.m4s', 'bytes=0-1048575');
+    results.xhrFallback = { status: r.x.status, events: r.events.join(',') };
+  }
+  // 5. 对照：不经过加速器，直接从慢节点拉同样大小
+  {
+    const t0 = performance.now();
+    const res = await fetch(H(8767) + '/v/9999-1-80.m4s', { headers: { Range: 'bytes=1000-3098151' } });
+    await res.arrayBuffer();
+    results.directSlowNodeMs = Math.round(performance.now() - t0);
+  }
+  results.stats = api && api.core.snapshot().stats;
+  results.nodes = api && api.core.snapshot().nodes.map(n => n.host + ' ' + n.state + ' score=' + n.score.toFixed(2) + ' onTime=' + n.onTime);
+  results.panelButton = !!Array.from(document.body.children).find(e => e.textContent === '⚡');
+  document.getElementById('out').textContent = JSON.stringify(results, null, 2);
+  window.__harnessDone = results;
+})().catch(e => { document.getElementById('out').textContent = '出错：' + e.stack; window.__harnessDone = { error: String(e) }; });
+</script>
+</body>
+</html>

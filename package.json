@@ -1,0 +1,12 @@
+{
+  "name": "bilibili-multi-node-accelerator",
+  "version": "0.2.1",
+  "description": "B 站多节点加速器：油猴脚本，整段优先、落后时按速度动态拆分给多个 CDN 节点并行下载",
+  "main": "bilibili-accelerator.user.js",
+  "scripts": {
+    "test": "node --test --test-force-exit test/core.test.js",
+    "bench": "node test/real-cdn.js"
+  },
+  "license": "MIT",
+  "private": true
+}
